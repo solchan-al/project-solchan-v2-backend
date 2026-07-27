@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import path from "node:path";
 
 import { env } from "../config/env.js";
 import { accreditationRouter } from "../routes/accreditation.js";
@@ -17,6 +18,7 @@ export function createApp() {
     })
   );
   app.use(express.json({ limit: "1mb" }));
+  app.use("/storage", express.static(path.resolve(process.cwd(), env.STORAGE_ROOT)));
 
   app.use("/health", healthRouter);
   app.use("/organizations", organizationRouter);
@@ -28,4 +30,3 @@ export function createApp() {
 
   return app;
 }
-
