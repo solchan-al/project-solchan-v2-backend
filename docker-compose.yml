@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: solchan-v2-postgres
+    environment:
+      POSTGRES_USER: solchan
+      POSTGRES_PASSWORD: solchan
+      POSTGRES_DB: solchan_v2_mvp
+    ports:
+      - "5433:5432"
+    volumes:
+      - solchan_v2_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  solchan_v2_postgres_data:
