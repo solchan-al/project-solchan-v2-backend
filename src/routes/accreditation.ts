@@ -38,7 +38,14 @@ accreditationRouter.post("/:id/manifest", async (request, response) => {
 
   const documentsResult = await pool.query(
     `
-      select id, original_filename, storage_path, mime_type, byte_size, sha256_hash, created_at
+      select
+        id,
+        original_filename,
+        storage_path,
+        mime_type,
+        byte_size::text as byte_size,
+        sha256_hash,
+        created_at::text as created_at
       from evidence_documents
       where accreditation_request_id = $1
       order by created_at asc, id asc
@@ -159,4 +166,3 @@ accreditationRouter.patch("/:id/onchain", async (request, response) => {
 
   response.json({ accreditationRequest: result.rows[0] });
 });
-
