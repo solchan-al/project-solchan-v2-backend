@@ -4,8 +4,70 @@ import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { HttpError } from "../http/errors.js";
 import { UuidParamsSchema, WalletAddressSchema } from "../schemas/common.js";
+import { canonicalJson } from "../services/canonical-json.js";
+import { sha256Text } from "../services/hash.js";
+import { storeAdminMetadata } from "../services/storage.js";
 
 export const adminRouter = Router();
+
+adminRouter.post("/metadata-documents", async (request, response) => {
+  const BodySchema = z.object({
+    recordType: z.enum(["taxonomy", "criteria"]),
+    recordKind: z.string().min(1).max(80),
+    recordKey: z.string().min(1).max(120),
+    recordVersion: z.number().int().positive().optional(),
+    content: z.record(z.unknown()),
+    createdByWallet: WalletAddressSchema.optional()
+  });
+  const parsed = BodySchema.parse(request.body);
+  const canonicalContent = canonicalJson(parsed.content);
+  const contentHash = sha256Text(canonicalContent);
+  const storagePath = await storeAdminMetadata(
+    parsed.recordType,
+    parsed.recordKind,
+    parsed.recordKey,
+    contentHash,
+    canonicalContent
+  );
+
+  const result = await pool.query(
+    `
+      insert into admin_metadata_documents (
+        record_type,
+        record_kind,
+        record_key,
+        record_version,
+        content_json,
+        canonical_json,
+        content_hash,
+        storage_path,
+        created_by_wallet
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      on conflict (content_hash) do update
+      set content_json = excluded.content_json,
+          canonical_json = excluded.canonical_json
+      returning *
+    `,
+    [
+      parsed.recordType,
+      parsed.recordKind,
+      parsed.recordKey,
+      parsed.recordVersion ?? null,
+      parsed.content,
+      canonicalContent,
+      contentHash,
+      storagePath,
+      parsed.createdByWallet ?? null
+    ]
+  );
+
+  response.status(201).json({
+    metadataDocument: result.rows[0],
+    metadataHash: contentHash,
+    metadataUri: `/storage/${storagePath}`
+  });
+});
 
 adminRouter.get("/accreditation-requests", async (_request, response) => {
   const result = await pool.query(`
@@ -100,4 +162,3 @@ adminRouter.post("/accreditation-requests/:id/notes", async (request, response) 
 
   response.status(201).json({ note: result.rows[0] });
 });
-

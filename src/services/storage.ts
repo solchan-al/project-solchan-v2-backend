@@ -30,6 +30,16 @@ export function evidenceManifestsDir(organizationId: string, requestId: string) 
   );
 }
 
+export function adminMetadataDir(recordType: string, recordKind: string, recordKey: string) {
+  return path.join(
+    root,
+    "admin-metadata",
+    safePathSegment(recordType),
+    safePathSegment(recordKind),
+    safePathSegment(recordKey)
+  );
+}
+
 export async function storeUploadedFile(
   tempPath: string,
   organizationId: string,
@@ -67,6 +77,22 @@ export async function storeManifest(
   return path.relative(root, absolutePath);
 }
 
+export async function storeAdminMetadata(
+  recordType: string,
+  recordKind: string,
+  recordKey: string,
+  contentHash: string,
+  canonicalContent: string
+) {
+  const directory = adminMetadataDir(recordType, recordKind, recordKey);
+  await mkdir(directory, { recursive: true });
+
+  const absolutePath = path.join(directory, `${contentHash}.json`);
+  await writeFile(absolutePath, canonicalContent, "utf8");
+
+  return path.relative(root, absolutePath);
+}
+
 function safeExtension(filename: string) {
   const extension = path.extname(filename).toLowerCase();
   if (!extension || extension.length > 12) {
@@ -75,3 +101,11 @@ function safeExtension(filename: string) {
   return extension.replace(/[^a-z0-9.]/g, "");
 }
 
+function safePathSegment(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "unknown";
+}
