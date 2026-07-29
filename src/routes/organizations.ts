@@ -119,6 +119,27 @@ organizationRouter.post("/", async (request, response) => {
   response.status(201).json({ organization: result.rows[0] });
 });
 
+organizationRouter.get("/", async (_request, response) => {
+  const result = await pool.query(`
+    select
+      o.*,
+      count(ar.id)::integer as accreditation_request_count,
+      (
+        select latest.status::text
+        from accreditation_requests_offchain latest
+        where latest.organization_id = o.id
+        order by latest.created_at desc
+        limit 1
+      ) as latest_accreditation_status
+    from organizations_offchain o
+    left join accreditation_requests_offchain ar on ar.organization_id = o.id
+    group by o.id
+    order by o.created_at desc
+  `);
+
+  response.json({ organizations: result.rows });
+});
+
 organizationRouter.get("/:id", async (request, response) => {
   const { id } = UuidParamsSchema.parse(request.params);
 
