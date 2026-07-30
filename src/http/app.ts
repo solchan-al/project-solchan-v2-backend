@@ -16,7 +16,7 @@ export function createApp() {
   app.use(
     cors({
       origin(origin, callback) {
-        if (!origin || env.FRONTEND_ORIGINS.includes(origin)) {
+        if (!origin || env.FRONTEND_ORIGINS.includes(origin) || isLocalDevelopmentOrigin(origin)) {
           callback(null, true);
           return;
         }
@@ -38,4 +38,18 @@ export function createApp() {
   app.use(errorHandler);
 
   return app;
+}
+
+function isLocalDevelopmentOrigin(origin: string) {
+  if (env.NODE_ENV === "production") return false;
+
+  try {
+    const parsed = new URL(origin);
+    return (
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
+      /^https?:$/.test(parsed.protocol)
+    );
+  } catch {
+    return false;
+  }
 }
