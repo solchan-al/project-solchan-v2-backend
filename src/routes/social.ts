@@ -52,6 +52,11 @@ const EditCommentSchema = z.object({
   editReason: z.string().max(500).optional()
 });
 
+const ListPostsQuerySchema = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(10)
+});
+
 function buildVersionPayload(input: {
   authorTrustSnapshot: Record<string, unknown>;
   content: Record<string, unknown>;
@@ -77,6 +82,24 @@ function hashVersion(input: {
     canonical,
     hash: sha256Text(canonical)
   };
+}
+
+function buildPostsCursor(row: { created_at: Date | string; id: string }) {
+  const createdAt = row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at;
+  return Buffer.from(`${createdAt}|${row.id}`, "utf8").toString("base64url");
+}
+
+function parsePostsCursor(cursor?: string) {
+  if (!cursor) return null;
+
+  try {
+    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+    const [createdAt, id] = decoded.split("|");
+    if (!createdAt || !id) return null;
+    return { createdAt, id };
+  } catch {
+    return null;
+  }
 }
 
 socialRouter.post("/posts", async (request, response) => {
@@ -151,26 +174,46 @@ socialRouter.post("/posts", async (request, response) => {
   }
 });
 
-socialRouter.get("/posts", async (_request, response) => {
-  const result = await pool.query(`
-    select
-      p.*,
-      v.version_number as current_version_number,
-      v.content_kind,
-      v.content_json,
-      v.content_hash,
-      v.author_trust_snapshot,
-      v.created_at as current_version_created_at,
-      count(c.id)::integer as comment_count
-    from social_posts p
-    join social_post_versions v on v.id = p.current_version_id
-    left join social_comments c on c.post_id = p.id and c.status = 'active'
-    where p.status = 'active'
-    group by p.id, v.id
-    order by p.created_at desc
-  `);
+socialRouter.get("/posts", async (request, response) => {
+  const parsed = ListPostsQuerySchema.parse(request.query);
+  const cursor = parsePostsCursor(parsed.cursor);
+  const params: unknown[] = [parsed.limit + 1];
+  let cursorWhere = "";
 
-  response.json({ posts: result.rows });
+  if (cursor) {
+    params.push(cursor.createdAt, cursor.id);
+    cursorWhere = "and (p.created_at, p.id) < ($2::timestamptz, $3::uuid)";
+  }
+
+  const result = await pool.query(
+    `
+      select
+        p.*,
+        v.version_number as current_version_number,
+        v.content_kind,
+        v.content_json,
+        v.content_hash,
+        v.author_trust_snapshot,
+        v.created_at as current_version_created_at,
+        count(c.id)::integer as comment_count
+      from social_posts p
+      join social_post_versions v on v.id = p.current_version_id
+      left join social_comments c on c.post_id = p.id and c.status = 'active'
+      where p.status = 'active'
+      ${cursorWhere}
+      group by p.id, v.id
+      order by p.created_at desc, p.id desc
+      limit $1
+    `,
+    params
+  );
+  const rows = result.rows.slice(0, parsed.limit);
+  const last = rows.at(-1);
+
+  response.json({
+    nextCursor: result.rows.length > parsed.limit && last ? buildPostsCursor(last) : null,
+    posts: rows
+  });
 });
 
 socialRouter.get("/posts/:id", async (request, response) => {
