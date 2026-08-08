@@ -1,11 +1,13 @@
 import { Router } from "express";
+import path from "node:path";
 import { z } from "zod";
 
+import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
 import { HttpError } from "../http/errors.js";
 import { UuidParamsSchema, WalletAddressSchema } from "../schemas/common.js";
 import { canonicalJson } from "../services/canonical-json.js";
-import { sha256Text } from "../services/hash.js";
+import { sha256File, sha256Text } from "../services/hash.js";
 import { storeAdminMetadata } from "../services/storage.js";
 
 export const adminRouter = Router();
@@ -135,10 +137,26 @@ adminRouter.get("/accreditation-requests/:id", async (request, response) => {
     [id]
   );
 
+  const documents = await Promise.all(
+    documentsResult.rows.map(async (document) => ({
+      ...document,
+      integrity: await verifyStoredHash(document.storage_path, document.sha256_hash)
+    }))
+  );
+  const evidenceManifest = manifestResult.rows[0]
+    ? {
+        ...manifestResult.rows[0],
+        integrity: await verifyStoredHash(
+          manifestResult.rows[0].manifest_storage_path,
+          manifestResult.rows[0].manifest_hash
+        )
+      }
+    : null;
+
   response.json({
     accreditationRequest,
-    documents: documentsResult.rows,
-    evidenceManifest: manifestResult.rows[0] ?? null,
+    documents,
+    evidenceManifest,
     notes: notesResult.rows
   });
 });
@@ -162,3 +180,32 @@ adminRouter.post("/accreditation-requests/:id/notes", async (request, response) 
 
   response.status(201).json({ note: result.rows[0] });
 });
+
+async function verifyStoredHash(storagePath: string, expectedHash: string) {
+  try {
+    const storageRoot = path.resolve(process.cwd(), env.STORAGE_ROOT);
+    const absolutePath = path.resolve(storageRoot, storagePath);
+
+    if (!absolutePath.startsWith(`${storageRoot}${path.sep}`)) {
+      return {
+        currentHash: null,
+        error: "Storage path is outside storage root.",
+        matches: false
+      };
+    }
+
+    const currentHash = await sha256File(absolutePath);
+
+    return {
+      currentHash,
+      error: null,
+      matches: currentHash === expectedHash
+    };
+  } catch (error) {
+    return {
+      currentHash: null,
+      error: error instanceof Error ? error.message : "Could not verify stored file.",
+      matches: false
+    };
+  }
+}
