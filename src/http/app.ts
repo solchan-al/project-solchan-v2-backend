@@ -8,6 +8,7 @@ import { adminRouter } from "../routes/admin.js";
 import { healthRouter } from "../routes/health.js";
 import { organizationRouter } from "../routes/organizations.js";
 import { socialRouter } from "../routes/social.js";
+import { userRouter } from "../routes/users.js";
 import { errorHandler, notFound } from "./errors.js";
 
 export function createApp() {
@@ -30,6 +31,7 @@ export function createApp() {
 
   app.use("/health", healthRouter);
   app.use("/organizations", organizationRouter);
+  app.use("/users", userRouter);
   app.use("/accreditation-requests", accreditationRouter);
   app.use("/admin", adminRouter);
   app.use("/social", socialRouter);
