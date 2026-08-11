@@ -1,66 +1,75 @@
-import { Router } from "express";
+import { Router, type NextFunction } from "express";
 import { z } from "zod";
 
 import { pool } from "../db/pool.js";
 import { HttpError } from "../http/errors.js";
 import { upload } from "../http/upload.js";
 import { OptionalPublicKeySchema, UuidParamsSchema, WalletAddressSchema } from "../schemas/common.js";
+import { assertWalletCanRegisterAs } from "../services/actor-identity.js";
 import { canonicalJson } from "../services/canonical-json.js";
 import { sha256File, sha256Text } from "../services/hash.js";
 import { storeAdminMetadata, storeUploadedFile } from "../services/storage.js";
 
 export const organizationRouter = Router();
 
-organizationRouter.post("/metadata-documents", async (request, response) => {
+organizationRouter.post("/metadata-documents", async (request, response, next: NextFunction) => {
   const BodySchema = z.object({
     content: z.record(z.unknown()),
     createdByWallet: WalletAddressSchema.optional(),
     recordKey: z.string().min(1).max(120)
   });
-  const parsed = BodySchema.parse(request.body);
-  const canonicalContent = canonicalJson(parsed.content);
-  const contentHash = sha256Text(canonicalContent);
-  const storagePath = await storeAdminMetadata(
-    "organization",
-    "identity",
-    parsed.recordKey,
-    contentHash,
-    canonicalContent
-  );
+  try {
+    const parsed = BodySchema.parse(request.body);
+    if (parsed.createdByWallet) {
+      await assertWalletCanRegisterAs(pool, parsed.createdByWallet, "organization");
+    }
 
-  const result = await pool.query(
-    `
-      insert into admin_metadata_documents (
-        record_type,
-        record_kind,
-        record_key,
-        content_json,
-        canonical_json,
-        content_hash,
-        storage_path,
-        created_by_wallet
-      )
-      values ('organization', 'identity', $1, $2, $3, $4, $5, $6)
-      on conflict (content_hash) do update
-      set content_json = excluded.content_json,
-          canonical_json = excluded.canonical_json
-      returning *
-    `,
-    [
+    const canonicalContent = canonicalJson(parsed.content);
+    const contentHash = sha256Text(canonicalContent);
+    const storagePath = await storeAdminMetadata(
+      "organization",
+      "identity",
       parsed.recordKey,
-      parsed.content,
-      canonicalContent,
       contentHash,
-      storagePath,
-      parsed.createdByWallet ?? null
-    ]
-  );
+      canonicalContent
+    );
 
-  response.status(201).json({
-    metadataDocument: result.rows[0],
-    metadataHash: contentHash,
-    metadataUri: `/storage/${storagePath}`
-  });
+    const result = await pool.query(
+      `
+        insert into admin_metadata_documents (
+          record_type,
+          record_kind,
+          record_key,
+          content_json,
+          canonical_json,
+          content_hash,
+          storage_path,
+          created_by_wallet
+        )
+        values ('organization', 'identity', $1, $2, $3, $4, $5, $6)
+        on conflict (content_hash) do update
+        set content_json = excluded.content_json,
+            canonical_json = excluded.canonical_json
+        returning *
+      `,
+      [
+        parsed.recordKey,
+        parsed.content,
+        canonicalContent,
+        contentHash,
+        storagePath,
+        parsed.createdByWallet ?? null
+      ]
+    );
+
+    response.status(201).json({
+      metadataDocument: result.rows[0],
+      metadataHash: contentHash,
+      metadataUri: `/storage/${storagePath}`
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 const CreateOrganizationSchema = z.object({
@@ -83,40 +92,54 @@ const CreateAccreditationRequestSchema = z.object({
   metadataHash: z.string().min(32).max(128).optional()
 });
 
-organizationRouter.post("/", async (request, response) => {
-  const parsed = CreateOrganizationSchema.parse(request.body);
-  const metadataHash = sha256Text(JSON.stringify(parsed.metadata));
+organizationRouter.post("/", async (request, response, next: NextFunction) => {
+  const client = await pool.connect();
+  try {
+    const parsed = CreateOrganizationSchema.parse(request.body);
+    const metadataHash = sha256Text(JSON.stringify(parsed.metadata));
 
-  const result = await pool.query(
-    `
-      insert into organizations_offchain (
-        wallet_address,
-        organization_pda,
-        name,
-        legal_name,
-        website_url,
-        description,
-        primary_organization_type,
-        metadata_json,
-        metadata_hash
-      )
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      returning *
-    `,
-    [
-      parsed.walletAddress,
-      parsed.organizationPda ?? null,
-      parsed.name,
-      parsed.legalName ?? null,
-      parsed.websiteUrl ?? null,
-      parsed.description ?? null,
-      parsed.primaryOrganizationType ?? null,
-      parsed.metadata,
-      metadataHash
-    ]
-  );
+    await client.query("begin");
+    await assertWalletCanRegisterAs(client, parsed.walletAddress, "organization");
 
-  response.status(201).json({ organization: result.rows[0] });
+    const result = await client.query(
+      `
+        insert into organizations_offchain (
+          wallet_address,
+          organization_pda,
+          name,
+          legal_name,
+          website_url,
+          description,
+          primary_organization_type,
+          metadata_json,
+          metadata_hash
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        returning *
+      `,
+      [
+        parsed.walletAddress,
+        parsed.organizationPda ?? null,
+        parsed.name,
+        parsed.legalName ?? null,
+        parsed.websiteUrl ?? null,
+        parsed.description ?? null,
+        parsed.primaryOrganizationType ?? null,
+        parsed.metadata,
+        metadataHash
+      ]
+    );
+
+    await createDefaultOrganizationContexts(client, result.rows[0].id, parsed.name);
+
+    await client.query("commit");
+    response.status(201).json({ organization: result.rows[0] });
+  } catch (error) {
+    await client.query("rollback");
+    next(error);
+  } finally {
+    client.release();
+  }
 });
 
 organizationRouter.get("/", async (_request, response) => {
@@ -124,16 +147,38 @@ organizationRouter.get("/", async (_request, response) => {
     select
       o.*,
       count(ar.id)::integer as accreditation_request_count,
-      (
-        select latest.status::text
-        from accreditation_requests_offchain latest
-        where latest.organization_id = o.id
-        order by latest.created_at desc
-        limit 1
-      ) as latest_accreditation_status
+      latest.id as latest_accreditation_request_id,
+      latest.accreditation_request_pda as latest_accreditation_request_pda,
+      latest.criteria_bundle_hash as latest_criteria_bundle_hash,
+      latest.evidence_manifest_hash as latest_evidence_manifest_hash,
+      case
+        when latest_manifest.manifest_storage_path is not null
+          then '/storage/' || latest_manifest.manifest_storage_path
+        else latest.metadata_uri
+      end as latest_metadata_uri,
+      latest.metadata_hash as latest_metadata_hash,
+      latest.onchain_signature as latest_onchain_signature,
+      latest.status::text as latest_accreditation_status
     from organizations_offchain o
     left join accreditation_requests_offchain ar on ar.organization_id = o.id
+    left join lateral (
+      select *
+      from accreditation_requests_offchain latest
+      where latest.organization_id = o.id
+      order by latest.created_at desc
+      limit 1
+    ) latest on true
+    left join evidence_manifests latest_manifest on latest_manifest.id = latest.evidence_manifest_id
     group by o.id
+      , latest.id
+      , latest.accreditation_request_pda
+      , latest.criteria_bundle_hash
+      , latest.evidence_manifest_hash
+      , latest_manifest.manifest_storage_path
+      , latest.metadata_uri
+      , latest.metadata_hash
+      , latest.onchain_signature
+      , latest.status
     order by o.created_at desc
   `);
 
@@ -151,6 +196,87 @@ organizationRouter.get("/:id", async (request, response) => {
   }
 
   response.json({ organization });
+});
+
+organizationRouter.get("/by-pda/:account", async (request, response) => {
+  const AccountParamsSchema = z.object({
+    account: z.string().min(32).max(64)
+  });
+  const { account } = AccountParamsSchema.parse(request.params);
+
+  const result = await pool.query(
+    `
+      select
+        o.*,
+        count(ar.id)::integer as accreditation_request_count,
+        latest.id as latest_accreditation_request_id,
+        latest.accreditation_request_pda as latest_accreditation_request_pda,
+        latest.criteria_bundle_hash as latest_criteria_bundle_hash,
+        latest.evidence_manifest_hash as latest_evidence_manifest_hash,
+        case
+          when latest_manifest.manifest_storage_path is not null
+            then '/storage/' || latest_manifest.manifest_storage_path
+          else latest.metadata_uri
+        end as latest_metadata_uri,
+        latest.metadata_hash as latest_metadata_hash,
+        latest.onchain_signature as latest_onchain_signature,
+        latest.status::text as latest_accreditation_status
+      from organizations_offchain o
+      left join accreditation_requests_offchain ar on ar.organization_id = o.id
+      left join lateral (
+        select *
+        from accreditation_requests_offchain latest
+        where latest.organization_id = o.id
+        order by latest.created_at desc
+        limit 1
+      ) latest on true
+      left join evidence_manifests latest_manifest on latest_manifest.id = latest.evidence_manifest_id
+      where o.organization_pda = $1
+      group by o.id
+        , latest.id
+        , latest.accreditation_request_pda
+        , latest.criteria_bundle_hash
+        , latest.evidence_manifest_hash
+        , latest_manifest.manifest_storage_path
+        , latest.metadata_uri
+        , latest.metadata_hash
+        , latest.onchain_signature
+        , latest.status
+    `,
+    [account]
+  );
+
+  if (!result.rows[0]) {
+    throw new HttpError(404, "Organization profile not found");
+  }
+
+  response.json({ organization: result.rows[0] });
+});
+
+organizationRouter.get("/:id/contexts", async (request, response) => {
+  const { id } = UuidParamsSchema.parse(request.params);
+
+  const result = await pool.query(
+    `
+      select
+        id,
+        organization_id,
+        context_key,
+        title,
+        description,
+        metadata_json,
+        context_hash,
+        status,
+        created_at::text as created_at,
+        updated_at::text as updated_at
+      from organization_contexts
+      where organization_id = $1 and status = 'active'
+      order by context_key asc
+    `,
+    [id]
+  );
+
+  response.json({ contexts: result.rows });
 });
 
 organizationRouter.post("/:id/accreditation-requests", async (request, response) => {
@@ -283,3 +409,52 @@ organizationRouter.post(
     }
   }
 );
+
+async function createDefaultOrganizationContexts(
+  client: Pick<typeof pool, "query">,
+  organizationId: string,
+  organizationName: string
+) {
+  const defaults = [
+    {
+      key: "membership",
+      title: "Membership or participation",
+      description: "The user asks the organization to confirm membership, participation, or community relationship."
+    },
+    {
+      key: "course-completion",
+      title: "Course completion",
+      description: "The user asks the organization to confirm completion of a course, cohort, bootcamp, or learning track."
+    },
+    {
+      key: "event-attendance",
+      title: "Event attendance",
+      description: "The user asks the organization to confirm attendance or participation in a specific event."
+    }
+  ];
+
+  for (const context of defaults) {
+    const metadata = {
+      organization: organizationName,
+      schema: "solchan.organization-context.v1",
+      source: "default"
+    };
+    const contextHash = sha256Text(`${organizationId}:${context.key}`);
+
+    await client.query(
+      `
+        insert into organization_contexts (
+          organization_id,
+          context_key,
+          title,
+          description,
+          metadata_json,
+          context_hash
+        )
+        values ($1, $2, $3, $4, $5, $6)
+        on conflict (organization_id, context_key) do nothing
+      `,
+      [organizationId, context.key, context.title, context.description, metadata, contextHash]
+    );
+  }
+}

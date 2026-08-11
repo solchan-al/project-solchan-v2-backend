@@ -181,6 +181,44 @@ adminRouter.post("/accreditation-requests/:id/notes", async (request, response) 
   response.status(201).json({ note: result.rows[0] });
 });
 
+adminRouter.patch("/accreditation-requests/:id/decision", async (request, response) => {
+  const { id } = UuidParamsSchema.parse(request.params);
+  const BodySchema = z.object({
+    adminWallet: WalletAddressSchema,
+    decisionRecordPda: WalletAddressSchema,
+    decisionResult: z.enum(["approved", "rejected", "changes_requested"]),
+    onchainSignature: z.string().min(32).max(128).optional()
+  });
+  const parsed = BodySchema.parse(request.body);
+
+  const result = await pool.query(
+    `
+      update accreditation_requests_offchain
+      set status = $2,
+          reviewed_at = now(),
+          reviewed_by_wallet = $3,
+          decision_record_pda = $4,
+          review_onchain_signature = coalesce($5, review_onchain_signature),
+          updated_at = now()
+      where id = $1
+      returning *
+    `,
+    [
+      id,
+      parsed.decisionResult,
+      parsed.adminWallet,
+      parsed.decisionRecordPda,
+      parsed.onchainSignature
+    ]
+  );
+
+  if (!result.rows[0]) {
+    throw new HttpError(404, "Accreditation request not found");
+  }
+
+  response.json({ accreditationRequest: result.rows[0] });
+});
+
 async function verifyStoredHash(storagePath: string, expectedHash: string) {
   try {
     const storageRoot = path.resolve(process.cwd(), env.STORAGE_ROOT);

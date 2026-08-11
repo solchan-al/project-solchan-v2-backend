@@ -1,7 +1,7 @@
 node_modules/
 dist/
+.dev/
 .env
 storage/
 coverage/
 npm-debug.log*
-

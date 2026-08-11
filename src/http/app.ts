@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { env } from "../config/env.js";
 import { accreditationRouter } from "../routes/accreditation.js";
+import { actorRouter } from "../routes/actors.js";
 import { adminRouter } from "../routes/admin.js";
 import { healthRouter } from "../routes/health.js";
 import { organizationRouter } from "../routes/organizations.js";
@@ -30,6 +31,7 @@ export function createApp() {
   app.use("/storage", express.static(path.resolve(process.cwd(), env.STORAGE_ROOT)));
 
   app.use("/health", healthRouter);
+  app.use("/actors", actorRouter);
   app.use("/organizations", organizationRouter);
   app.use("/users", userRouter);
   app.use("/accreditation-requests", accreditationRouter);

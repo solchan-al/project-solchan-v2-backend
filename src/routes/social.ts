@@ -1,6 +1,8 @@
-import { Router } from "express";
+import { Router, type NextFunction } from "express";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 
+import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
 import { HttpError } from "../http/errors.js";
 import { OptionalPublicKeySchema, UuidParamsSchema, WalletAddressSchema } from "../schemas/common.js";
@@ -53,9 +55,15 @@ const EditCommentSchema = z.object({
 });
 
 const ListPostsQuerySchema = z.object({
+  authorType: z.enum(["user", "organization", "admin"]).optional(),
+  authorWallet: WalletAddressSchema.optional(),
   cursor: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(50).default(10)
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+  organizationAccount: OptionalPublicKeySchema,
+  userProfileAccount: OptionalPublicKeySchema
 });
+
+type AuthorInput = z.infer<typeof AuthorSchema>;
 
 function buildVersionPayload(input: {
   authorTrustSnapshot: Record<string, unknown>;
@@ -102,7 +110,69 @@ function parsePostsCursor(cursor?: string) {
   }
 }
 
-socialRouter.post("/posts", async (request, response) => {
+async function assertRegisteredSocialAuthor(client: PoolClient, author: AuthorInput) {
+  if (author.authorType === "user") {
+    if (!author.userProfileAccount) {
+      throw new HttpError(403, "Create your Solchan user profile before publishing or commenting.");
+    }
+
+    const result = await client.query(
+      `
+        select id
+        from admin_metadata_documents
+        where record_type = 'user'
+          and record_kind = 'profile'
+          and record_key = $1
+          and created_by_wallet = $2
+        limit 1
+      `,
+      [author.userProfileAccount, author.authorWallet]
+    );
+
+    if (!result.rows[0]) {
+      throw new HttpError(403, "This wallet is not registered as the requested Solchan user profile.");
+    }
+
+    return;
+  }
+
+  if (author.authorType === "organization") {
+    if (!author.organizationAccount) {
+      throw new HttpError(403, "Use an approved organization account before publishing or commenting as an organization.");
+    }
+
+    const result = await client.query(
+      `
+        select o.id
+        from organizations_offchain o
+        join lateral (
+          select status
+          from accreditation_requests_offchain latest
+          where latest.organization_id = o.id
+          order by latest.created_at desc
+          limit 1
+        ) latest on true
+        where o.organization_pda = $1
+          and o.wallet_address = $2
+          and latest.status = 'approved'
+        limit 1
+      `,
+      [author.organizationAccount, author.authorWallet]
+    );
+
+    if (!result.rows[0]) {
+      throw new HttpError(403, "This wallet does not control an approved Solchan organization.");
+    }
+
+    return;
+  }
+
+  if (!env.SOLCHAN_ADMIN_WALLETS.includes(author.authorWallet)) {
+    throw new HttpError(403, "This wallet is not registered as a Solchan administrator.");
+  }
+}
+
+socialRouter.post("/posts", async (request, response, next: NextFunction) => {
   const parsed = CreatePostSchema.parse(request.body);
   const { canonical, hash } = hashVersion({
     authorTrustSnapshot: parsed.authorTrustSnapshot,
@@ -114,6 +184,7 @@ socialRouter.post("/posts", async (request, response) => {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await assertRegisteredSocialAuthor(client, parsed);
 
     const postResult = await client.query(
       `
@@ -168,7 +239,7 @@ socialRouter.post("/posts", async (request, response) => {
     response.status(201).json({ post: updatedPostResult.rows[0], version });
   } catch (error) {
     await client.query("rollback");
-    throw error;
+    next(error);
   } finally {
     client.release();
   }
@@ -178,11 +249,31 @@ socialRouter.get("/posts", async (request, response) => {
   const parsed = ListPostsQuerySchema.parse(request.query);
   const cursor = parsePostsCursor(parsed.cursor);
   const params: unknown[] = [parsed.limit + 1];
-  let cursorWhere = "";
+  const where = ["p.status = 'active'"];
+
+  if (parsed.authorType) {
+    params.push(parsed.authorType);
+    where.push(`p.author_type = $${params.length}`);
+  }
+
+  if (parsed.authorWallet) {
+    params.push(parsed.authorWallet);
+    where.push(`p.author_wallet = $${params.length}`);
+  }
+
+  if (parsed.organizationAccount) {
+    params.push(parsed.organizationAccount);
+    where.push(`p.organization_account = $${params.length}`);
+  }
+
+  if (parsed.userProfileAccount) {
+    params.push(parsed.userProfileAccount);
+    where.push(`p.user_profile_account = $${params.length}`);
+  }
 
   if (cursor) {
     params.push(cursor.createdAt, cursor.id);
-    cursorWhere = "and (p.created_at, p.id) < ($2::timestamptz, $3::uuid)";
+    where.push(`(p.created_at, p.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`);
   }
 
   const result = await pool.query(
@@ -199,8 +290,7 @@ socialRouter.get("/posts", async (request, response) => {
       from social_posts p
       join social_post_versions v on v.id = p.current_version_id
       left join social_comments c on c.post_id = p.id and c.status = 'active'
-      where p.status = 'active'
-      ${cursorWhere}
+      where ${where.join(" and ")}
       group by p.id, v.id
       order by p.created_at desc, p.id desc
       limit $1
@@ -354,7 +444,7 @@ socialRouter.post("/posts/:id/versions", async (request, response) => {
   }
 });
 
-socialRouter.post("/posts/:id/comments", async (request, response) => {
+socialRouter.post("/posts/:id/comments", async (request, response, next: NextFunction) => {
   const { id } = UuidParamsSchema.parse(request.params);
   const parsed = CreateCommentSchema.parse(request.body);
   const { canonical, hash } = hashVersion({
@@ -366,6 +456,7 @@ socialRouter.post("/posts/:id/comments", async (request, response) => {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await assertRegisteredSocialAuthor(client, parsed);
 
     const postResult = await client.query("select id from social_posts where id = $1", [id]);
     if (!postResult.rows[0]) {
@@ -438,7 +529,7 @@ socialRouter.post("/posts/:id/comments", async (request, response) => {
     response.status(201).json({ comment: updatedCommentResult.rows[0], version });
   } catch (error) {
     await client.query("rollback");
-    throw error;
+    next(error);
   } finally {
     client.release();
   }
