@@ -40,6 +40,30 @@ export function adminMetadataDir(recordType: string, recordKind: string, recordK
   );
 }
 
+export function userEndorsementEvidenceDocumentsDir(userProfileAccount: string, requestPda: string) {
+  return path.join(
+    root,
+    "evidence",
+    "users",
+    safePathSegment(userProfileAccount),
+    "endorsement-requests",
+    safePathSegment(requestPda),
+    "documents"
+  );
+}
+
+export function userEndorsementEvidenceManifestsDir(userProfileAccount: string, requestPda: string) {
+  return path.join(
+    root,
+    "evidence",
+    "users",
+    safePathSegment(userProfileAccount),
+    "endorsement-requests",
+    safePathSegment(requestPda),
+    "manifests"
+  );
+}
+
 export async function storeUploadedFile(
   tempPath: string,
   organizationId: string,
@@ -62,6 +86,28 @@ export async function storeUploadedFile(
   };
 }
 
+export async function storeUserEndorsementEvidenceFile(
+  tempPath: string,
+  userProfileAccount: string,
+  requestPda: string,
+  originalName: string
+) {
+  const directory = userEndorsementEvidenceDocumentsDir(userProfileAccount, requestPda);
+  await mkdir(directory, { recursive: true });
+
+  const extension = safeExtension(originalName);
+  const storedFilename = `${randomUUID()}${extension}`;
+  const absolutePath = path.join(directory, storedFilename);
+
+  await rename(tempPath, absolutePath);
+
+  return {
+    absolutePath,
+    storedFilename,
+    storagePath: path.relative(root, absolutePath)
+  };
+}
+
 export async function storeManifest(
   organizationId: string,
   requestId: string,
@@ -69,6 +115,21 @@ export async function storeManifest(
   canonicalManifest: string
 ) {
   const directory = evidenceManifestsDir(organizationId, requestId);
+  await mkdir(directory, { recursive: true });
+
+  const absolutePath = path.join(directory, `${manifestHash}.json`);
+  await writeFile(absolutePath, canonicalManifest, "utf8");
+
+  return path.relative(root, absolutePath);
+}
+
+export async function storeUserEndorsementEvidenceManifest(
+  userProfileAccount: string,
+  requestPda: string,
+  manifestHash: string,
+  canonicalManifest: string
+) {
+  const directory = userEndorsementEvidenceManifestsDir(userProfileAccount, requestPda);
   await mkdir(directory, { recursive: true });
 
   const absolutePath = path.join(directory, `${manifestHash}.json`);
