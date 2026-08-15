@@ -34,12 +34,14 @@ export async function getActorRegistration(
 
   const userResult = await client.query(
     `
-      select record_key, content_json
+      select distinct on (record_key)
+        record_key,
+        content_json
       from admin_metadata_documents
       where record_type = 'user'
         and record_kind = 'profile'
         and created_by_wallet = $1
-      order by created_at asc
+      order by record_key, created_at desc
     `,
     [walletAddress]
   );

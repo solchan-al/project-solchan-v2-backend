@@ -113,6 +113,97 @@ userRouter.post("/metadata-documents", async (request, response, next: NextFunct
   }
 });
 
+userRouter.patch("/profiles/:account/metadata-documents", async (request, response, next: NextFunction) => {
+  const ParamsSchema = z.object({
+    account: z.string().min(32).max(120)
+  });
+  const BodySchema = z.object({
+    content: z.record(z.unknown()),
+    updatedByWallet: WalletAddressSchema
+  });
+
+  try {
+    const { account } = ParamsSchema.parse(request.params);
+    const parsed = BodySchema.parse(request.body);
+
+    const existingResult = await pool.query(
+      `
+        select content_hash, created_by_wallet
+        from admin_metadata_documents
+        where record_type = 'user'
+          and record_kind = 'profile'
+          and record_key = $1
+        order by created_at desc
+        limit 1
+      `,
+      [account]
+    );
+    const existing = existingResult.rows[0];
+
+    if (!existing) {
+      throw new HttpError(404, "User profile metadata not found");
+    }
+
+    if (existing.created_by_wallet !== parsed.updatedByWallet) {
+      throw new HttpError(403, "Only the wallet that created this user profile can update its display metadata.");
+    }
+
+    const content = {
+      ...parsed.content,
+      previousMetadataHash: existing.content_hash,
+      schema: "solchan.user-profile-display-metadata.v1",
+      updatedAt: new Date().toISOString(),
+      userProfile: account,
+      walletAddress: parsed.updatedByWallet
+    };
+    const canonicalContent = canonicalJson(content);
+    const contentHash = sha256Text(canonicalContent);
+    const storagePath = await storeAdminMetadata(
+      "user",
+      "profile",
+      account,
+      contentHash,
+      canonicalContent
+    );
+
+    const result = await pool.query(
+      `
+        insert into admin_metadata_documents (
+          record_type,
+          record_kind,
+          record_key,
+          content_json,
+          canonical_json,
+          content_hash,
+          storage_path,
+          created_by_wallet
+        )
+        values ('user', 'profile', $1, $2, $3, $4, $5, $6)
+        on conflict (content_hash) do update
+        set content_json = excluded.content_json,
+            canonical_json = excluded.canonical_json
+        returning *
+      `,
+      [
+        account,
+        content,
+        canonicalContent,
+        contentHash,
+        storagePath,
+        parsed.updatedByWallet
+      ]
+    );
+
+    response.status(201).json({
+      metadataDocument: result.rows[0],
+      metadataHash: contentHash,
+      metadataUri: `/storage/${storagePath}`
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 userRouter.post("/endorsement-evidence-documents", async (request, response, next: NextFunction) => {
   const BodySchema = z.object({
     content: z.record(z.unknown()),
