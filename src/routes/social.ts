@@ -18,12 +18,24 @@ const AuthorSchema = z.object({
   organizationAccount: OptionalPublicKeySchema
 });
 
+const VisualAssetSchema = z
+  .object({
+    byteSize: z.number().int().nonnegative(),
+    mimeType: z.string().min(1).max(120),
+    originalFilename: z.string().min(1).max(240),
+    sha256Hash: z.string().min(32).max(128),
+    storagePath: z.string().min(1).max(500),
+    url: z.string().min(1).max(600)
+  })
+  .strict();
+
 const ContentSchema = z
   .object({
     title: z.string().min(1).max(180).optional(),
     body: z.string().min(1).max(20000),
     summary: z.string().max(500).optional(),
-    tags: z.array(z.string().min(1).max(40)).max(12).default([])
+    tags: z.array(z.string().min(1).max(40)).max(12).default([]),
+    image: VisualAssetSchema.optional()
   })
   .strict();
 

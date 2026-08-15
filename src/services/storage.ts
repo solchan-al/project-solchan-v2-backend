@@ -64,6 +64,10 @@ export function userEndorsementEvidenceManifestsDir(userProfileAccount: string, 
   );
 }
 
+export function assetImagesDir(owner: string) {
+  return path.join(root, "assets", "images", safePathSegment(owner));
+}
+
 export async function storeUploadedFile(
   tempPath: string,
   organizationId: string,
@@ -93,6 +97,23 @@ export async function storeUserEndorsementEvidenceFile(
   originalName: string
 ) {
   const directory = userEndorsementEvidenceDocumentsDir(userProfileAccount, requestPda);
+  await mkdir(directory, { recursive: true });
+
+  const extension = safeExtension(originalName);
+  const storedFilename = `${randomUUID()}${extension}`;
+  const absolutePath = path.join(directory, storedFilename);
+
+  await rename(tempPath, absolutePath);
+
+  return {
+    absolutePath,
+    storedFilename,
+    storagePath: path.relative(root, absolutePath)
+  };
+}
+
+export async function storeImageAsset(tempPath: string, owner: string, originalName: string) {
+  const directory = assetImagesDir(owner);
   await mkdir(directory, { recursive: true });
 
   const extension = safeExtension(originalName);

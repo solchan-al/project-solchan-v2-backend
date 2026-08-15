@@ -6,6 +6,7 @@ import { env } from "../config/env.js";
 import { accreditationRouter } from "../routes/accreditation.js";
 import { actorRouter } from "../routes/actors.js";
 import { adminRouter } from "../routes/admin.js";
+import { assetRouter } from "../routes/assets.js";
 import { healthRouter } from "../routes/health.js";
 import { organizationRouter } from "../routes/organizations.js";
 import { socialRouter } from "../routes/social.js";
@@ -32,6 +33,7 @@ export function createApp() {
 
   app.use("/health", healthRouter);
   app.use("/actors", actorRouter);
+  app.use("/assets", assetRouter);
   app.use("/organizations", organizationRouter);
   app.use("/users", userRouter);
   app.use("/accreditation-requests", accreditationRouter);
