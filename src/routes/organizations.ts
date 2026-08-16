@@ -279,6 +279,58 @@ organizationRouter.get("/:id/contexts", async (request, response) => {
   response.json({ contexts: result.rows });
 });
 
+organizationRouter.get("/:id/contexts/:contextId", async (request, response) => {
+  const { id, contextId } = z.object({
+    id: UuidParamsSchema.shape.id,
+    contextId: UuidParamsSchema.shape.id
+  }).parse(request.params);
+
+  const result = await pool.query(
+    `
+      select
+        c.id,
+        c.organization_id,
+        c.context_key,
+        c.title,
+        c.description,
+        c.metadata_json,
+        c.context_hash,
+        c.status,
+        c.created_at::text as created_at,
+        c.updated_at::text as updated_at,
+        o.name as organization_name,
+        o.organization_pda
+      from organization_contexts c
+      join organizations_offchain o on o.id = c.organization_id
+      where c.organization_id = $1 and c.id = $2
+    `,
+    [id, contextId]
+  );
+
+  const context = result.rows[0];
+  if (!context) {
+    throw new HttpError(404, "Organization validation context not found");
+  }
+
+  response.json({
+    context: {
+      contextHash: context.context_hash,
+      description: context.description,
+      key: context.context_key,
+      metadata: context.metadata_json,
+      organization: {
+        id: context.organization_id,
+        name: context.organization_name,
+        protocolRecord: context.organization_pda
+      },
+      schema: "solchan.organization-context.v1",
+      status: context.status,
+      title: context.title,
+      updatedAt: context.updated_at
+    }
+  });
+});
+
 organizationRouter.post("/:id/accreditation-requests", async (request, response) => {
   const { id } = UuidParamsSchema.parse(request.params);
   const parsed = CreateAccreditationRequestSchema.parse(request.body);
