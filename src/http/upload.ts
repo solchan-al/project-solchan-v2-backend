@@ -4,9 +4,16 @@ import { env } from "../config/env.js";
 import { HttpError } from "./errors.js";
 
 const allowedMimeTypes = new Set([
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/pdf",
+  "application/csv",
   "image/jpeg",
   "image/png",
+  "text/csv",
+  "text/markdown",
   "text/plain",
   "application/json"
 ]);
@@ -25,4 +32,3 @@ export const upload = multer({
     callback(null, true);
   }
 });
-
