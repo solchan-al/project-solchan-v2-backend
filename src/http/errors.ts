@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import multer from "multer";
 import { ZodError } from "zod";
 
 export class HttpError extends Error {
@@ -37,6 +38,14 @@ export function errorHandler(
     return;
   }
 
+  if (error instanceof multer.MulterError) {
+    response.status(400).json({
+      error: "UploadError",
+      message: uploadErrorMessage(error)
+    });
+    return;
+  }
+
   console.error(error);
   response.status(500).json({
     error: "InternalServerError",
@@ -44,3 +53,18 @@ export function errorHandler(
   });
 }
 
+function uploadErrorMessage(error: multer.MulterError) {
+  if (error.code === "LIMIT_FILE_SIZE") {
+    return "One evidence file exceeds the maximum allowed size.";
+  }
+
+  if (error.code === "LIMIT_FILE_COUNT") {
+    return "Too many evidence files were uploaded. The current limit is 10 files.";
+  }
+
+  if (error.code === "LIMIT_UNEXPECTED_FILE") {
+    return "Unexpected upload field. Evidence files must be uploaded with the documents field.";
+  }
+
+  return error.message || "Evidence upload failed.";
+}
