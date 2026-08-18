@@ -278,6 +278,7 @@ userRouter.post(
   upload.array("documents", 10),
   async (request, response, next: NextFunction) => {
     const BodySchema = z.object({
+      contextDescription: z.string().min(20).max(4000),
       contextHash: z.string().min(32).max(128),
       createdByWallet: WalletAddressSchema,
       criteriaBundleHash: z.string().min(32).max(128),
@@ -323,6 +324,7 @@ userRouter.post(
       }
 
       const manifest = {
+        contextDescription: parsed.contextDescription,
         contextHash: parsed.contextHash,
         createdAt: new Date().toISOString(),
         createdByWallet: parsed.createdByWallet,
