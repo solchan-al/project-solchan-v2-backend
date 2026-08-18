@@ -5,7 +5,7 @@ import { pool } from "../db/pool.js";
 import { HttpError } from "../http/errors.js";
 import { upload } from "../http/upload.js";
 import { OptionalPublicKeySchema, UuidParamsSchema, WalletAddressSchema } from "../schemas/common.js";
-import { assertWalletCanRegisterAs } from "../services/actor-identity.js";
+import { assertWalletCanRegisterAs, getActorRegistration } from "../services/actor-identity.js";
 import { canonicalJson } from "../services/canonical-json.js";
 import { sha256File, sha256Text } from "../services/hash.js";
 import { storeAdminMetadata, storeUploadedFile } from "../services/storage.js";
@@ -21,7 +21,19 @@ organizationRouter.post("/metadata-documents", async (request, response, next: N
   try {
     const parsed = BodySchema.parse(request.body);
     if (parsed.createdByWallet) {
-      await assertWalletCanRegisterAs(pool, parsed.createdByWallet, "organization");
+      const registration = await getActorRegistration(pool, parsed.createdByWallet);
+      if (registration.status === "conflict") {
+        throw new HttpError(
+          409,
+          "This wallet already has multiple identity records. Resolve the wallet identity conflict before creating organization metadata."
+        );
+      }
+      if (registration.status === "registered" && registration.registration.actorType !== "organization") {
+        throw new HttpError(
+          409,
+          "Only an organization wallet can create organization metadata."
+        );
+      }
     }
 
     const canonicalContent = canonicalJson(parsed.content);
