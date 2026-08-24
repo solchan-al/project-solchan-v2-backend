@@ -487,7 +487,18 @@ socialRouter.get("/posts/:id", async (request, response, next: NextFunction) => 
             when c.author_type = 'organization' then coalesce(o.name, v.author_trust_snapshot->>'authorLabel')
             when c.author_type = 'user' then coalesce(up.content_json->>'displayName', v.author_trust_snapshot->>'authorLabel')
             else coalesce(v.author_trust_snapshot->>'authorLabel', c.author_type::text)
-          end as author_display_name
+          end as author_display_name,
+          case
+            when c.author_type = 'organization' and o.metadata_json->'logo'->>'url' is not null
+              then o.metadata_json->'logo'->>'url'
+            when c.author_type = 'organization' and o.metadata_json->'logo'->>'storagePath' is not null
+              then '/storage/' || (o.metadata_json->'logo'->>'storagePath')
+            when c.author_type = 'user' and up.content_json->'avatar'->>'url' is not null
+              then up.content_json->'avatar'->>'url'
+            when c.author_type = 'user' and up.content_json->'avatar'->>'storagePath' is not null
+              then '/storage/' || (up.content_json->'avatar'->>'storagePath')
+            else null
+          end as author_image_url
         from social_comments c
         join social_comment_versions v on v.id = c.current_version_id
         left join organizations_offchain o
