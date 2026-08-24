@@ -25,6 +25,7 @@ const VisualAssetSchema = z
     originalFilename: z.string().min(1).max(240),
     sha256Hash: z.string().min(32).max(128),
     storagePath: z.string().min(1).max(500),
+    uploadedByWallet: WalletAddressSchema.nullable().optional(),
     url: z.string().min(1).max(600)
   })
   .strict();
@@ -185,16 +186,16 @@ async function assertRegisteredSocialAuthor(client: PoolClient, author: AuthorIn
 }
 
 socialRouter.post("/posts", async (request, response, next: NextFunction) => {
-  const parsed = CreatePostSchema.parse(request.body);
-  const { canonical, hash } = hashVersion({
-    authorTrustSnapshot: parsed.authorTrustSnapshot,
-    content: parsed.content,
-    contentKind: parsed.contentKind,
-    schema: "solchan.social-post-version.v1"
-  });
-
   const client = await pool.connect();
   try {
+    const parsed = CreatePostSchema.parse(request.body);
+    const { canonical, hash } = hashVersion({
+      authorTrustSnapshot: parsed.authorTrustSnapshot,
+      content: parsed.content,
+      contentKind: parsed.contentKind,
+      schema: "solchan.social-post-version.v1"
+    });
+
     await client.query("begin");
     await assertRegisteredSocialAuthor(client, parsed);
 
