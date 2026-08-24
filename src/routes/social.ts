@@ -76,6 +76,14 @@ const ListPostsQuerySchema = z.object({
   userProfileAccount: OptionalPublicKeySchema
 });
 
+const ListActivityQuerySchema = z.object({
+  authorType: z.enum(["user", "organization", "admin"]),
+  authorWallet: WalletAddressSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(12),
+  organizationAccount: OptionalPublicKeySchema,
+  userProfileAccount: OptionalPublicKeySchema
+});
+
 type AuthorInput = z.infer<typeof AuthorSchema>;
 
 function buildVersionPayload(input: {
@@ -317,6 +325,118 @@ socialRouter.get("/posts", async (request, response) => {
     nextCursor: result.rows.length > parsed.limit && last ? buildPostsCursor(last) : null,
     posts: rows
   });
+});
+
+socialRouter.get("/activity", async (request, response, next: NextFunction) => {
+  try {
+    const parsed = ListActivityQuerySchema.parse(request.query);
+    const actorAccount =
+      parsed.authorType === "user"
+        ? parsed.userProfileAccount
+        : parsed.authorType === "organization"
+          ? parsed.organizationAccount
+          : parsed.authorWallet;
+
+    if (!actorAccount) {
+      throw new HttpError(400, "Activity requires the matching user, organization, or admin account.");
+    }
+
+    const result = await pool.query(
+      `
+        with activity as (
+          select
+            'post'::text as activity_type,
+            p.id,
+            p.id as post_id,
+            null::uuid as comment_id,
+            null::uuid as parent_comment_id,
+            p.author_type,
+            p.author_wallet,
+            p.user_profile_account,
+            p.organization_account,
+            v.content_json->>'title' as title,
+            v.content_json->>'body' as body,
+            v.content_hash,
+            p.created_at,
+            v.created_at as current_version_created_at,
+            count(c.id)::integer as comment_count,
+            null::text as post_title,
+            null::text as post_excerpt
+          from social_posts p
+          join social_post_versions v on v.id = p.current_version_id
+          left join social_comments c on c.post_id = p.id and c.status = 'active'
+          where p.status = 'active'
+            and p.author_type = $1
+            and (
+              ($1 = 'user' and p.user_profile_account = $2)
+              or ($1 = 'organization' and p.organization_account = $2)
+              or ($1 = 'admin' and p.author_wallet = $2)
+            )
+          group by p.id, v.id
+
+          union all
+
+          select
+            'comment'::text as activity_type,
+            c.id,
+            c.post_id,
+            c.id as comment_id,
+            c.parent_comment_id,
+            c.author_type,
+            c.author_wallet,
+            c.user_profile_account,
+            c.organization_account,
+            null::text as title,
+            cv.content_json->>'body' as body,
+            cv.content_hash,
+            c.created_at,
+            cv.created_at as current_version_created_at,
+            null::integer as comment_count,
+            coalesce(pv.content_json->>'title', left(pv.content_json->>'body', 90)) as post_title,
+            left(pv.content_json->>'body', 220) as post_excerpt
+          from social_comments c
+          join social_comment_versions cv on cv.id = c.current_version_id
+          join social_posts p on p.id = c.post_id
+          join social_post_versions pv on pv.id = p.current_version_id
+          where c.status = 'active'
+            and p.status = 'active'
+            and c.author_type = $1
+            and (
+              ($1 = 'user' and c.user_profile_account = $2)
+              or ($1 = 'organization' and c.organization_account = $2)
+              or ($1 = 'admin' and c.author_wallet = $2)
+            )
+        )
+        select
+          a.*,
+          case
+            when a.author_type = 'organization' then coalesce(o.name, a.author_type::text)
+            when a.author_type = 'user' then coalesce(up.content_json->>'displayName', a.author_type::text)
+            else a.author_type::text
+          end as author_display_name
+        from activity a
+        left join organizations_offchain o
+          on a.author_type = 'organization'
+         and o.organization_pda = a.organization_account
+        left join lateral (
+          select content_json
+          from admin_metadata_documents
+          where record_type = 'user'
+            and record_kind = 'profile'
+            and record_key = a.user_profile_account
+          order by created_at desc
+          limit 1
+        ) up on a.author_type = 'user'
+        order by a.created_at desc, a.id desc
+        limit $3
+      `,
+      [parsed.authorType, actorAccount, parsed.limit]
+    );
+
+    response.json({ activity: result.rows });
+  } catch (error) {
+    next(error);
+  }
 });
 
 socialRouter.get("/posts/:id", async (request, response, next: NextFunction) => {
