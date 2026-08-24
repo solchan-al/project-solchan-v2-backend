@@ -307,6 +307,30 @@ socialRouter.get("/posts", async (request, response) => {
         v.content_hash,
         v.author_trust_snapshot,
         v.created_at as current_version_created_at,
+        case
+          when p.author_type = 'organization' then coalesce(
+            (
+              select o.name
+              from organizations_offchain o
+              where o.organization_pda = p.organization_account
+              limit 1
+            ),
+            v.author_trust_snapshot->>'authorLabel'
+          )
+          when p.author_type = 'user' then coalesce(
+            (
+              select up.content_json->>'displayName'
+              from admin_metadata_documents up
+              where up.record_type = 'user'
+                and up.record_kind = 'profile'
+                and up.record_key = p.user_profile_account
+              order by up.created_at desc
+              limit 1
+            ),
+            v.author_trust_snapshot->>'authorLabel'
+          )
+          else coalesce(v.author_trust_snapshot->>'authorLabel', p.author_type::text)
+        end as author_display_name,
         count(c.id)::integer as comment_count
       from social_posts p
       join social_post_versions v on v.id = p.current_version_id
@@ -452,7 +476,31 @@ socialRouter.get("/posts/:id", async (request, response, next: NextFunction) => 
           v.content_json,
           v.content_hash,
           v.author_trust_snapshot,
-          v.created_at as current_version_created_at
+          v.created_at as current_version_created_at,
+          case
+            when p.author_type = 'organization' then coalesce(
+              (
+                select o.name
+                from organizations_offchain o
+                where o.organization_pda = p.organization_account
+                limit 1
+              ),
+              v.author_trust_snapshot->>'authorLabel'
+            )
+            when p.author_type = 'user' then coalesce(
+              (
+                select up.content_json->>'displayName'
+                from admin_metadata_documents up
+                where up.record_type = 'user'
+                  and up.record_kind = 'profile'
+                  and up.record_key = p.user_profile_account
+                order by up.created_at desc
+                limit 1
+              ),
+              v.author_trust_snapshot->>'authorLabel'
+            )
+            else coalesce(v.author_trust_snapshot->>'authorLabel', p.author_type::text)
+          end as author_display_name
         from social_posts p
         join social_post_versions v on v.id = p.current_version_id
         where p.id = $1
