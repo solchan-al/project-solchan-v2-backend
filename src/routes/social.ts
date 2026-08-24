@@ -319,62 +319,83 @@ socialRouter.get("/posts", async (request, response) => {
   });
 });
 
-socialRouter.get("/posts/:id", async (request, response) => {
-  const { id } = UuidParamsSchema.parse(request.params);
+socialRouter.get("/posts/:id", async (request, response, next: NextFunction) => {
+  try {
+    const { id } = UuidParamsSchema.parse(request.params);
 
-  const postResult = await pool.query(
-    `
-      select
-        p.*,
-        v.version_number as current_version_number,
-        v.content_kind,
-        v.content_json,
-        v.content_hash,
-        v.author_trust_snapshot,
-        v.created_at as current_version_created_at
-      from social_posts p
-      join social_post_versions v on v.id = p.current_version_id
-      where p.id = $1
-    `,
-    [id]
-  );
-  const post = postResult.rows[0];
-  if (!post) {
-    throw new HttpError(404, "Post not found");
+    const postResult = await pool.query(
+      `
+        select
+          p.*,
+          v.version_number as current_version_number,
+          v.content_kind,
+          v.content_json,
+          v.content_hash,
+          v.author_trust_snapshot,
+          v.created_at as current_version_created_at
+        from social_posts p
+        join social_post_versions v on v.id = p.current_version_id
+        where p.id = $1
+      `,
+      [id]
+    );
+    const post = postResult.rows[0];
+    if (!post) {
+      throw new HttpError(404, "Post not found");
+    }
+
+    const versionsResult = await pool.query(
+      `
+        select *
+        from social_post_versions
+        where post_id = $1
+        order by version_number desc
+      `,
+      [id]
+    );
+
+    const commentsResult = await pool.query(
+      `
+        select
+          c.*,
+          v.version_number as current_version_number,
+          v.content_json,
+          v.content_hash,
+          v.author_trust_snapshot,
+          v.created_at as current_version_created_at,
+          case
+            when c.author_type = 'organization' then coalesce(o.name, v.author_trust_snapshot->>'authorLabel')
+            when c.author_type = 'user' then coalesce(up.content_json->>'displayName', v.author_trust_snapshot->>'authorLabel')
+            else coalesce(v.author_trust_snapshot->>'authorLabel', c.author_type::text)
+          end as author_display_name
+        from social_comments c
+        join social_comment_versions v on v.id = c.current_version_id
+        left join organizations_offchain o
+          on c.author_type = 'organization'
+         and o.organization_pda = c.organization_account
+        left join lateral (
+          select content_json
+          from admin_metadata_documents
+          where record_type = 'user'
+            and record_kind = 'profile'
+            and record_key = c.user_profile_account
+          order by created_at desc
+          limit 1
+        ) up on c.author_type = 'user'
+        where c.post_id = $1 and c.status = 'active'
+        order by c.created_at asc
+      `,
+      [id]
+    );
+
+    response.json({
+      comments: commentsResult.rows,
+      post,
+      versions: versionsResult.rows
+    });
+  } catch (error) {
+    next(error);
   }
-
-  const versionsResult = await pool.query(
-    `
-      select *
-      from social_post_versions
-      where post_id = $1
-      order by version_number desc
-    `,
-    [id]
-  );
-
-  const commentsResult = await pool.query(
-    `
-      select
-        c.*,
-        v.version_number as current_version_number,
-        v.content_json,
-        v.content_hash,
-        v.author_trust_snapshot,
-        v.created_at as current_version_created_at
-      from social_comments c
-      join social_comment_versions v on v.id = c.current_version_id
-      where c.post_id = $1 and c.status = 'active'
-      order by c.created_at asc
-    `,
-    [id]
-  );
-
-  response.json({
-    comments: commentsResult.rows,
-    post,
-    versions: versionsResult.rows
-  });
 });
 
 socialRouter.post("/posts/:id/versions", async (request, response) => {
