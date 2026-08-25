@@ -19,7 +19,12 @@ export function createApp() {
   app.use(
     cors({
       origin(origin, callback) {
-        if (!origin || env.FRONTEND_ORIGINS.includes(origin) || isLocalDevelopmentOrigin(origin)) {
+        if (
+          !origin ||
+          env.FRONTEND_ORIGINS.includes(origin) ||
+          isLocalDevelopmentOrigin(origin) ||
+          isAllowedDemoTunnelOrigin(origin)
+        ) {
           callback(null, true);
           return;
         }
@@ -55,6 +60,17 @@ function isLocalDevelopmentOrigin(origin: string) {
       (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
       /^https?:$/.test(parsed.protocol)
     );
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedDemoTunnelOrigin(origin: string) {
+  if (!env.ALLOW_TRYCLOUDFLARE_ORIGINS) return false;
+
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === "https:" && parsed.hostname.endsWith(".trycloudflare.com");
   } catch {
     return false;
   }

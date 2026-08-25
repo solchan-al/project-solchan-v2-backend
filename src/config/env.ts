@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const EnvSchema = z.object({
   DATABASE_URL: z.string().url(),
+  ALLOW_TRYCLOUDFLARE_ORIGINS: z.coerce.boolean().default(false),
   FRONTEND_ORIGIN: z.string().url().default("http://localhost:3000"),
   FRONTEND_ORIGINS: z.string().default("http://localhost:3000,http://localhost:3001"),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
